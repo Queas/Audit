@@ -45,6 +45,18 @@ export async function setCache<T>(key: string, data: T, ttlSeconds = 900): Promi
   }
 }
 
+export async function getRateLimitInfo(ip: string): Promise<{ count: number; ttl: number }> {
+  if (!ENABLED) return { count: 0, ttl: 0 };
+  try {
+    if (!redisClient) redisClient = await getRedis();
+    const count = Number(await redisClient.get(key(ip))) || 0;
+    const ttl = await redisClient.ttl(key(ip));
+    return { count, ttl: ttl < 0 ? 86400 : ttl };
+  } catch {
+    return { count: 0, ttl: 0 };
+  }
+}
+
 export async function incrementRateLimit(ip: string): Promise<{ count: number; ttl: number }> {
   if (!ENABLED) return { count: 0, ttl: 0 };
   try {

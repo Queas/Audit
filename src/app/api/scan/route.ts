@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { validateUrl } from "@/lib/ssrf";
 import { normalizeUrl } from "@/lib/scan-utils";
-import { getCache, setCache, incrementRateLimit } from "@/lib/redis";
+import { getCache, setCache, getRateLimitInfo, incrementRateLimit } from "@/lib/redis";
 import { scanOverview } from "./modules/overview";
 import { scanSSL } from "./modules/ssl";
 import { scanDNS } from "./modules/dns";
@@ -15,6 +15,17 @@ import { scanUptime } from "./modules/uptime";
 import { scanWHOIS } from "./modules/whois";
 import { scanAI } from "./modules/ai";
 import type { ScanResponse, ScanRequest } from "@/types/scan";
+
+const DAILY_LIMIT = 5;
+
+export async function GET(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
+  const rateInfo = await getRateLimitInfo(ip);
+  const remaining = Math.max(0, DAILY_LIMIT - rateInfo.count);
+  const resetsAt = new Date(Date.now() + (rateInfo.ttl || 86400) * 1000).toISOString();
+
+  return Response.json({ remaining, resetsAt, limit: DAILY_LIMIT });
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,17 +48,24 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
-    const rateInfo = await incrementRateLimit(ip);
-    const remaining = Math.max(0, 3 - rateInfo.count);
-    const resetsAt = new Date(Date.now() + (rateInfo.ttl || 86400) * 1000).toISOString();
 
-    if (rateInfo.count > 3) {
+    // Check rate limit before incrementing
+    const check = await getRateLimitInfo(ip);
+    const resetsAt = new Date(Date.now() + (check.ttl || 86400) * 1000).toISOString();
+
+    if (check.count >= DAILY_LIMIT) {
       return Response.json({
         error: "rate_limit",
         resetsAt,
-        message: "You've used your 3 free scans today. Come back tomorrow.",
+        remaining: 0,
+        message: "You've used your 5 free scans today. Come back tomorrow.",
       }, { status: 429 });
     }
+
+    // Increment after confirming the user is under the limit
+    const rateInfo = await incrementRateLimit(ip);
+    const remaining = Math.max(0, DAILY_LIMIT - rateInfo.count);
+    const effectiveResetsAt = new Date(Date.now() + (rateInfo.ttl || 86400) * 1000).toISOString();
 
     const cacheKey = `scan:${url.toLowerCase()}`;
     const cached = await getCache<ScanResponse>(cacheKey);
@@ -55,7 +73,7 @@ export async function POST(request: NextRequest) {
       return Response.json({
         ...cached.data,
         cached: true,
-        rateLimit: { remaining, resetsAt },
+        rateLimit: { remaining, resetsAt: effectiveResetsAt },
       });
     }
 
@@ -91,7 +109,7 @@ export async function POST(request: NextRequest) {
       url,
       scannedAt,
       cached: false,
-      rateLimit: { remaining, resetsAt },
+      rateLimit: { remaining, resetsAt: effectiveResetsAt },
       overview: overviewResult.status === "fulfilled" ? overviewResult.value : null,
       ssl: sslResult.status === "fulfilled" ? sslResult.value : null,
       dns: dnsResult.status === "fulfilled" ? dnsResult.value : null,

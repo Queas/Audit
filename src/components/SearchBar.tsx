@@ -58,7 +58,7 @@ export function SearchBar({ onScan, isLoading, remaining, rateLimited, resetsAt 
         {rateLimited && resetsAt && (
           <p className="text-xs text-amber-500 flex items-center gap-1">
             <AlertTriangle className="h-3 w-3" />
-            You&apos;ve used your 3 free scans today. Come back tomorrow.
+            You&apos;ve used your 5 free scans today. Come back tomorrow.
           </p>
         )}
         {remaining === null && !rateLimited && <span />}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { SearchBar } from "@/components/SearchBar";
 import { ScoreHeader } from "@/components/ScoreHeader";
@@ -13,6 +13,16 @@ export default function Home() {
   const [rateLimited, setRateLimited] = useState(false);
   const [resetsAt, setResetsAt] = useState<string | null>(null);
 
+  useEffect(() => {
+    fetch("/api/scan")
+      .then((r) => r.json())
+      .then((data) => {
+        setRemaining(data.remaining);
+        setResetsAt(data.resetsAt);
+      })
+      .catch(() => {});
+  }, []);
+
   const mutation = useMutation({
     mutationFn: async (url: string) => {
       const response = await fetch("/api/scan", {
@@ -24,6 +34,7 @@ export default function Home() {
       if (response.status === 429) {
         const data = await response.json();
         setRateLimited(true);
+        setRemaining(0);
         setResetsAt(data.resetsAt);
         throw new Error(data.message);
       }

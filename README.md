@@ -24,7 +24,7 @@ A portfolio-grade web application that accepts a single URL and returns a compre
 | Styling | Tailwind CSS v4 + shadcn/ui |
 | Data fetching | TanStack Query |
 | Caching | Redis (optional — graceful fallback) |
-| Rate limiting | Redis-backed IP tracking (3 scans/day) |
+| Rate limiting | Redis-backed IP tracking (5 scans/day) |
 | AI | OpenAI / Anthropic API (optional — fallback scoring) |
 
 ## Modules
@@ -94,7 +94,7 @@ The app follows a single-page architecture with no route changes:
 POST /api/scan → Promise.allSettled() → 12 parallel modules → AI summary → response
 ```
 
-All server-side requests go through SSRF protection (validates URL scheme, resolves IP against private ranges). Results are cached for 15 minutes. Rate limiting is 3 scans per IP per day.
+All server-side requests go through SSRF protection (validates URL scheme, resolves IP against private ranges). Results are cached for 15 minutes. Rate limiting is 5 scans per IP per day.
 
 ## API Keys
 
