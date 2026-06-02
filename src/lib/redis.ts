@@ -5,6 +5,43 @@ type RedisClient = import("ioredis").Redis;
 
 let redisClient: RedisClient | null = null;
 
+// In-memory fallback for when Redis is unavailable
+const memStore = new Map<string, { count: number; expiresAt: number }>();
+
+function memKey(ip: string): string {
+  return `ratelimit:${ip}`;
+}
+
+function memSweep(): void {
+  const now = Date.now();
+  for (const [k, v] of memStore) {
+    if (v.expiresAt <= now) memStore.delete(k);
+  }
+}
+
+function memGet(ip: string): { count: number; ttl: number } {
+  memSweep();
+  const k = memKey(ip);
+  const entry = memStore.get(k);
+  if (!entry) return { count: 0, ttl: 86400 };
+  const ttl = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
+  return { count: entry.count, ttl };
+}
+
+function memIncrement(ip: string): { count: number; ttl: number } {
+  memSweep();
+  const k = memKey(ip);
+  const now = Date.now();
+  const entry = memStore.get(k);
+  if (!entry) {
+    memStore.set(k, { count: 1, expiresAt: now + 86400_000 });
+    return { count: 1, ttl: 86400 };
+  }
+  entry.count += 1;
+  const ttl = Math.max(0, Math.round((entry.expiresAt - now) / 1000));
+  return { count: entry.count, ttl };
+}
+
 function getRedis(): Promise<RedisClient> {
   return import("ioredis").then((mod) => {
     const Redis = mod.default;
@@ -46,33 +83,37 @@ export async function setCache<T>(key: string, data: T, ttlSeconds = 900): Promi
 }
 
 export async function getRateLimitInfo(ip: string): Promise<{ count: number; ttl: number }> {
-  if (!ENABLED) return { count: 0, ttl: 0 };
-  try {
-    if (!redisClient) redisClient = await getRedis();
-    const count = Number(await redisClient.get(key(ip))) || 0;
-    const ttl = await redisClient.ttl(key(ip));
-    return { count, ttl: ttl < 0 ? 86400 : ttl };
-  } catch {
-    return { count: 0, ttl: 0 };
+  if (ENABLED) {
+    try {
+      if (!redisClient) redisClient = await getRedis();
+      const count = Number(await redisClient.get(redisKey(ip))) || 0;
+      const ttl = await redisClient.ttl(redisKey(ip));
+      return { count, ttl: ttl < 0 ? 86400 : ttl };
+    } catch {
+      // fall through to in-memory fallback
+    }
   }
+  return memGet(ip);
 }
 
 export async function incrementRateLimit(ip: string): Promise<{ count: number; ttl: number }> {
-  if (!ENABLED) return { count: 0, ttl: 0 };
-  try {
-    if (!redisClient) redisClient = await getRedis();
-    const count = await redisClient.incr(key(ip));
-    let ttl = await redisClient.ttl(key(ip));
-    if (count === 1) {
-      await redisClient.expire(key(ip), 86400);
-      ttl = 86400;
+  if (ENABLED) {
+    try {
+      if (!redisClient) redisClient = await getRedis();
+      const count = await redisClient.incr(redisKey(ip));
+      let ttl = await redisClient.ttl(redisKey(ip));
+      if (count === 1) {
+        await redisClient.expire(redisKey(ip), 86400);
+        ttl = 86400;
+      }
+      return { count, ttl };
+    } catch {
+      // fall through to in-memory fallback
     }
-    return { count, ttl };
-  } catch {
-    return { count: 0, ttl: 0 };
   }
+  return memIncrement(ip);
 }
 
-function key(ip: string): string {
+function redisKey(ip: string): string {
   return `ratelimit:${ip}`;
 }
