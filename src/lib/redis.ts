@@ -1,43 +1,81 @@
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { join } from "path";
+
 const REDIS_URL = process.env.REDIS_URL || "";
 const ENABLED = REDIS_URL.length > 0;
+const DATA_DIR = process.env.DATA_DIR || join(process.cwd(), "data");
+const RATE_LIMIT_FILE = join(DATA_DIR, "ratelimit.json");
 
 type RedisClient = import("ioredis").Redis;
 
 let redisClient: RedisClient | null = null;
 
-// In-memory fallback for when Redis is unavailable
-const memStore = new Map<string, { count: number; expiresAt: number }>();
+// File-backed fallback for when Redis is unavailable
+interface RateLimitEntry {
+  count: number;
+  expiresAt: number;
+}
+
+function ensureDir(): void {
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
+function readStore(): Record<string, RateLimitEntry> {
+  try {
+    ensureDir();
+    if (!existsSync(RATE_LIMIT_FILE)) return {};
+    return JSON.parse(readFileSync(RATE_LIMIT_FILE, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+function writeStore(store: Record<string, RateLimitEntry>): void {
+  try {
+    ensureDir();
+    writeFileSync(RATE_LIMIT_FILE, JSON.stringify(store), "utf-8");
+  } catch {
+    // silently fail
+  }
+}
 
 function memKey(ip: string): string {
   return `ratelimit:${ip}`;
 }
 
-function memSweep(): void {
+function memSweep(store: Record<string, RateLimitEntry>): void {
   const now = Date.now();
-  for (const [k, v] of memStore) {
-    if (v.expiresAt <= now) memStore.delete(k);
+  for (const k of Object.keys(store)) {
+    if (store[k].expiresAt <= now) delete store[k];
   }
 }
 
 function memGet(ip: string): { count: number; ttl: number } {
-  memSweep();
+  const store = readStore();
+  memSweep(store);
+  writeStore(store);
   const k = memKey(ip);
-  const entry = memStore.get(k);
+  const entry = store[k];
   if (!entry) return { count: 0, ttl: 86400 };
   const ttl = Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000));
   return { count: entry.count, ttl };
 }
 
 function memIncrement(ip: string): { count: number; ttl: number } {
-  memSweep();
+  const store = readStore();
+  memSweep(store);
   const k = memKey(ip);
   const now = Date.now();
-  const entry = memStore.get(k);
+  const entry = store[k];
   if (!entry) {
-    memStore.set(k, { count: 1, expiresAt: now + 86400_000 });
+    store[k] = { count: 1, expiresAt: now + 86400_000 };
+    writeStore(store);
     return { count: 1, ttl: 86400 };
   }
   entry.count += 1;
+  writeStore(store);
   const ttl = Math.max(0, Math.round((entry.expiresAt - now) / 1000));
   return { count: entry.count, ttl };
 }
